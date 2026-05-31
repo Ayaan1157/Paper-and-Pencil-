@@ -5,10 +5,10 @@ export function ScrollVideo() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [progress, setProgress] = useState(0);
 
-  // rAF loop driving currentTime from scroll with robust LERP interpolation
+  // rAF loop driving currentTime from scroll with eased progress interpolation
   useEffect(() => {
     let running = true;
-    let target = 0;
+    let easedP = 0;
     let primed = false;
 
     const tick = () => {
@@ -18,7 +18,7 @@ export function ScrollVideo() {
       if (el && v) {
         const d = v.duration;
 
-        // Try to prime the video once the duration is finite (enables mobile scrubbing)
+        // Try to prime the video once the duration is available (enables inline scrubbing)
         if (isFinite(d) && d > 0 && !primed) {
           primed = true;
           const attemptPrime = async () => {
@@ -27,7 +27,7 @@ export function ScrollVideo() {
               v.pause();
               v.currentTime = 0.0001;
             } catch (e) {
-              // autoplay or interaction block (safe to ignore)
+              // Ignore autoplay/interaction blocks safely
             }
           };
           attemptPrime();
@@ -36,31 +36,24 @@ export function ScrollVideo() {
         const rect = el.getBoundingClientRect();
         const total = el.offsetHeight - window.innerHeight;
         const scrolled = Math.min(Math.max(-rect.top, 0), Math.max(total, 1));
-        const p = total > 0 ? scrolled / total : 0;
-        setProgress(p);
+        const rawP = total > 0 ? scrolled / total : 0;
+
+        // Eased progress LERP (0.16) for responsive, butter-smooth scroll-driven video timeline
+        easedP += (rawP - easedP) * 0.16;
+        setProgress(easedP);
 
         if (isFinite(d) && d > 0) {
-          // Fallback to duration if seekable is not yet populated
+          // Fallback to total duration if seekable range is not yet fully populated
           const seekableEnd = v.seekable && v.seekable.length > 0 ? v.seekable.end(v.seekable.length - 1) : 0;
           const limit = seekableEnd > 0 ? seekableEnd : d;
           
           const maxTime = Math.min(d, limit) - 0.05;
-          target = Math.min(Math.max(maxTime, 0), Math.max(0, p * d));
+          const targetTime = Math.min(Math.max(maxTime, 0), Math.max(0, easedP * d));
 
-          // Interpolated currentTime update for ultra-smooth video scrubbing
-          const current = v.currentTime;
-          // Faster LERP factor (0.25) to align tightly with scrolling momentum
-          let next = current + (target - current) * 0.25;
-
-          // If the difference is negligible, snap to the target to save rendering cycles
-          if (Math.abs(next - target) < 0.01) {
-            next = target;
-          }
-
-          // Only seek if the value has changed and the browser is not actively decoding the last seek
-          if (Math.abs(next - current) > 0.002 && !v.seeking) {
+          // Only seek if the difference is larger than a tiny threshold to avoid redundant CPU/GPU cycles
+          if (Math.abs(v.currentTime - targetTime) > 0.005) {
             try {
-              v.currentTime = next;
+              v.currentTime = targetTime;
             } catch {}
           }
         }
