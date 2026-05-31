@@ -4,6 +4,32 @@ export function ScrollVideo() {
   const sectionRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [progress, setProgress] = useState(0);
+  const [videoSrc, setVideoSrc] = useState<string>("");
+
+  // Preload video into memory (Blob URL) to completely bypass HTTP range requests and eliminate seek lag!
+  useEffect(() => {
+    let active = true;
+    let objectUrl = "";
+
+    fetch("/scroll-house-faststart.mp4?v=2")
+      .then((res) => res.blob())
+      .then((blob) => {
+        if (!active) return;
+        objectUrl = URL.createObjectURL(blob);
+        setVideoSrc(objectUrl);
+      })
+      .catch(() => {
+        if (!active) return;
+        setVideoSrc("/scroll-house-faststart.mp4?v=2"); // Fallback
+      });
+
+    return () => {
+      active = false;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, []);
 
   // rAF loop driving currentTime from scroll with 60fps hardware throttle and ultra-responsive easing
   useEffect(() => {
@@ -98,7 +124,7 @@ export function ScrollVideo() {
       <div className="sticky top-0 h-screen w-full overflow-hidden">
         <video
           ref={videoRef}
-          src="/scroll-house-faststart.mp4?v=2"
+          src={videoSrc || undefined}
           muted
           playsInline
           preload="auto"
