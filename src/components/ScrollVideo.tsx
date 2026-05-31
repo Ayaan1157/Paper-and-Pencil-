@@ -5,12 +5,13 @@ export function ScrollVideo() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [progress, setProgress] = useState(0);
 
-  // rAF loop driving currentTime from scroll with 30fps hardware throttle
+  // rAF loop driving currentTime from scroll with 60fps hardware throttle and ultra-responsive easing
   useEffect(() => {
     let running = true;
+    let easedP = 0;
     let primed = false;
     let lastSeekTime = 0;
-    const SEEK_THROTTLE_MS = 33; // Seek at most 30 times per second to prevent GPU decoder lag
+    const SEEK_THROTTLE_MS = 16; // Seek at 60fps (16ms) to deliver maximum smooth frame rates
 
     const tick = (now: number) => {
       if (!running) return;
@@ -37,8 +38,11 @@ export function ScrollVideo() {
         const rect = el.getBoundingClientRect();
         const total = el.offsetHeight - window.innerHeight;
         const scrolled = Math.min(Math.max(-rect.top, 0), Math.max(total, 1));
-        const p = total > 0 ? scrolled / total : 0;
-        setProgress(p);
+        const rawP = total > 0 ? scrolled / total : 0;
+
+        // Eased progress LERP (0.3) for extremely responsive, 60fps fluid scroll-driven video timeline
+        easedP += (rawP - easedP) * 0.3;
+        setProgress(easedP);
 
         if (isFinite(d) && d > 0) {
           // Fallback to total duration if seekable range is not yet fully populated
@@ -46,11 +50,11 @@ export function ScrollVideo() {
           const limit = seekableEnd > 0 ? seekableEnd : d;
           
           const maxTime = Math.min(d, limit) - 0.05;
-          const targetTime = Math.min(Math.max(maxTime, 0), Math.max(0, p * d));
+          const targetTime = Math.min(Math.max(maxTime, 0), Math.max(0, easedP * d));
 
-          // Throttled seeking to match video decode hardware refresh rate (30fps)
+          // Throttled seeking to match 60fps high-refresh rate displays
           if (now - lastSeekTime >= SEEK_THROTTLE_MS) {
-            if (Math.abs(v.currentTime - targetTime) > 0.01) {
+            if (Math.abs(v.currentTime - targetTime) > 0.005) {
               try {
                 v.currentTime = targetTime;
                 lastSeekTime = now;
