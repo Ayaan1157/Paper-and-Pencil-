@@ -4,9 +4,11 @@ export function ScrollVideo() {
   const sectionRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const [progress, setProgress] = useState(0);
-  const [videoSrc, setVideoSrc] = useState<string>("");
+  
+  // Start with the direct URL for instant playback/caching, then swap to blob URL in background
+  const [videoSrc, setVideoSrc] = useState<string>("/scroll-house-faststart.mp4?v=2");
 
-  // Preload video into memory (Blob URL) to completely bypass HTTP range requests and eliminate seek lag!
+  // Preload video into memory (Blob URL) in the background to completely bypass HTTP range requests and eliminate seek lag!
   useEffect(() => {
     let active = true;
     let objectUrl = "";
@@ -19,8 +21,7 @@ export function ScrollVideo() {
         setVideoSrc(objectUrl);
       })
       .catch(() => {
-        if (!active) return;
-        setVideoSrc("/scroll-house-faststart.mp4?v=2"); // Fallback
+        // Safe fallback already set to direct URL
       });
 
     return () => {
@@ -31,22 +32,82 @@ export function ScrollVideo() {
     };
   }, []);
 
-  // rAF loop driving currentTime from scroll with 60fps hardware throttle and ultra-responsive easing
+  // Keep track of section layout offsets to completely bypass layout-thrashing getBoundingClientRect calls inside rAF
+  const dimensionsRef = useRef({ top: 0, height: 0 });
+
+  useEffect(() => {
+    const updateDimensions = () => {
+      const el = sectionRef.current;
+      if (el) {
+        // Read these layout properties once during mount/resize (safe)
+        dimensionsRef.current = {
+          top: el.offsetTop,
+          height: el.offsetHeight
+        };
+      }
+    };
+
+    updateDimensions();
+    // Delay slightly to let image assets load and occupy their true heights
+    const timer = setTimeout(updateDimensions, 400);
+
+    window.addEventListener("resize", updateDimensions);
+    window.addEventListener("load", updateDimensions);
+
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("resize", updateDimensions);
+      window.removeEventListener("load", updateDimensions);
+    };
+  }, []);
+
+  // Outstanding seek manager to completely prevent overloading the H.264 hardware decoder
+  const isSeekingRef = useRef(false);
+  const pendingTimeRef = useRef<number | null>(null);
+
+  // Set up standard non-blocking seek synchronization via browser event listeners
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+
+    const handleSeeked = () => {
+      isSeekingRef.current = false;
+      // If a new seek request arrived while we were seeking, perform it now!
+      if (pendingTimeRef.current !== null) {
+        const nextTime = pendingTimeRef.current;
+        pendingTimeRef.current = null;
+        isSeekingRef.current = true;
+        v.currentTime = nextTime;
+      }
+    };
+
+    const handleSeeking = () => {
+      isSeekingRef.current = true;
+    };
+
+    v.addEventListener("seeked", handleSeeked);
+    v.addEventListener("seeking", handleSeeking);
+
+    return () => {
+      v.removeEventListener("seeked", handleSeeked);
+      v.removeEventListener("seeking", handleSeeking);
+    };
+  }, [videoSrc]);
+
+  // rAF loop driving currentTime from scroll with zero-reflow layout calculations and throttled seeks
   useEffect(() => {
     let running = true;
     let easedP = 0;
     let primed = false;
-    let lastSeekTime = 0;
-    const SEEK_THROTTLE_MS = 16; // Seek at 60fps (16ms) to deliver maximum smooth frame rates
 
-    const tick = (now: number) => {
+    const tick = () => {
       if (!running) return;
       const el = sectionRef.current;
       const v = videoRef.current;
       if (el && v) {
         const d = v.duration;
 
-        // Try to prime the video once the duration is available (enables inline scrubbing)
+        // Prime the video once the duration is available (enables instant inline scrubbing)
         if (isFinite(d) && d > 0 && !primed) {
           primed = true;
           const attemptPrime = async () => {
@@ -61,30 +122,33 @@ export function ScrollVideo() {
           attemptPrime();
         }
 
-        const rect = el.getBoundingClientRect();
-        const total = el.offsetHeight - window.innerHeight;
-        const scrolled = Math.min(Math.max(-rect.top, 0), Math.max(total, 1));
+        // Extremely fast, layout-safe offset calculation using cached values and cheap window.scrollY
+        const { top: offsetTop, height: offsetHeight } = dimensionsRef.current;
+        const total = offsetHeight - window.innerHeight;
+        const scrollY = window.scrollY;
+        const scrolled = Math.min(Math.max(scrollY - offsetTop, 0), Math.max(total, 1));
         const rawP = total > 0 ? scrolled / total : 0;
 
-        // Eased progress LERP (0.3) for extremely responsive, 60fps fluid scroll-driven video timeline
+        // Eased progress LERP (0.3) for extremely responsive, fluid scroll-driven video timeline
         easedP += (rawP - easedP) * 0.3;
         setProgress(easedP);
 
         if (isFinite(d) && d > 0) {
-          // Fallback to total duration if seekable range is not yet fully populated
           const seekableEnd = v.seekable && v.seekable.length > 0 ? v.seekable.end(v.seekable.length - 1) : 0;
           const limit = seekableEnd > 0 ? seekableEnd : d;
           
           const maxTime = Math.min(d, limit) - 0.05;
           const targetTime = Math.min(Math.max(maxTime, 0), Math.max(0, easedP * d));
 
-          // Throttled seeking to match 60fps high-refresh rate displays
-          if (now - lastSeekTime >= SEEK_THROTTLE_MS) {
-            if (Math.abs(v.currentTime - targetTime) > 0.005) {
-              try {
-                v.currentTime = targetTime;
-                lastSeekTime = now;
-              } catch {}
+          // Only perform a seek if the difference is meaningful (> 0.005 seconds)
+          if (Math.abs(v.currentTime - targetTime) > 0.005) {
+            // Native seek check combined with our tracker prevents decoder choking/blocking
+            if (!v.seeking && !isSeekingRef.current) {
+              isSeekingRef.current = true;
+              v.currentTime = targetTime;
+            } else {
+              // Store target time to seek to immediately once the current seek finishes
+              pendingTimeRef.current = targetTime;
             }
           }
         }
@@ -141,14 +205,14 @@ export function ScrollVideo() {
 
         <div className="absolute inset-0 flex items-center justify-center px-6">
           <h2
-            className="absolute text-center font-serif text-[clamp(2.75rem,8vw,7rem)] leading-[1] tracking-tight text-white transition-opacity duration-700 ease-out"
+            className="absolute text-center font-serif text-[clamp(2.75rem,8vw,7rem)] leading-[1] tracking-tight text-white"
             style={{ opacity: o1, fontFamily: "'Cormorant Garamond', serif" }}
           >
             We are Paper <span className="italic">and</span> Pencil
           </h2>
 
           <p
-            className="absolute max-w-3xl text-center italic transition-opacity duration-700 ease-out"
+            className="absolute max-w-3xl text-center italic"
             style={{
               opacity: o2,
               color: "#F5F0E8",
@@ -162,7 +226,7 @@ export function ScrollVideo() {
           </p>
 
           <p
-            className="absolute text-center transition-opacity duration-700 ease-out"
+            className="absolute text-center"
             style={{
               opacity: o3,
               color: "#B8935A",
