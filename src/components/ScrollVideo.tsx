@@ -49,15 +49,16 @@ export function ScrollVideo() {
 
           // Interpolated currentTime update for ultra-smooth video scrubbing
           const current = v.currentTime;
-          let next = current + (target - current) * 0.1; // Smooth interpolation speed (0.1)
+          // Faster LERP factor (0.25) to align tightly with scrolling momentum
+          let next = current + (target - current) * 0.25;
 
           // If the difference is negligible, snap to the target to save rendering cycles
           if (Math.abs(next - target) < 0.01) {
             next = target;
           }
 
-          // Only set if the value has changed significantly to avoid excessive repaint/CPU cycles
-          if (Math.abs(next - current) > 0.002) {
+          // Only seek if the value has changed and the browser is not actively decoding the last seek
+          if (Math.abs(next - current) > 0.002 && !v.seeking) {
             try {
               v.currentTime = next;
             } catch {}
